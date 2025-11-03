@@ -13,6 +13,8 @@ from socket import *
 import sys
 import threading
 import os
+from dataclasses import dataclass, field
+from threading import RLock
 
 GOODBYEMSGFILE = "./goodbye.txt"
 BEFORELOGINMSGFILE = "./prelogin.txt"
@@ -22,6 +24,59 @@ beforeLoginMsg = ''
 goodbyeMsg = ''
 
 users = {} #{ username: password }
+
+# ---------------------- ROOM MANAGEMENT ----------------------
+
+@dataclass
+class Room:
+    id: int
+    topic: str
+    leader: str
+    members: set[str] = field(default_factory=set)
+
+class State:
+    def __init__(self):
+        self._lock = RLock()
+        self.rooms: dict[int, Room] = {}
+        self._next_room_id = 1
+
+    def new_room(self, topic: str, leader: str) -> int:
+        with self._lock:
+            rid = self._next_room_id
+            self._next_room_id += 1
+            self.rooms[rid] = Room(rid, topic, leader, {leader})
+            return rid
+
+    def list_rooms(self):
+        with self._lock:
+            return [
+                f"{rid}: {r.topic} | leader={r.leader} | members={len(r.members)}"
+                for rid, r in sorted(self.rooms.items())
+            ]
+
+    def join_room(self, rid: int, user: str):
+        with self._lock:
+            if rid not in self.rooms:
+                return False
+            self.rooms[rid].members.add(user)
+            return True
+
+    def leave_room(self, rid: int, user: str):
+        with self._lock:
+            if rid not in self.rooms:
+                return None
+            r = self.rooms[rid]
+            if user not in r.members:
+                return None
+            r.members.remove(user)
+            leader_left = (user == r.leader)
+            if leader_left:
+                members = r.members.copy()
+                del self.rooms[rid]
+                return members
+            return set()
+
+STATE = State()
 
 def loadMsgs():
     global beforeLoginMsg
@@ -45,10 +100,82 @@ def load_users():
 
 def save_users():
     with open(USERS_FILE, "w") as f:
-        for u, p in user.items():
+        for u, p in users.items():
             f.write(f"{u}:{p}\n")
                 
+def handle_room_cmd(sock, user, command, args):
+    # CREATE ROOM
+    if command == "start":
+        if not args:
+            mySendAll(sock, b"Usage: start <topic>\n")
+            return
+        topic = " ".join(args)
+        rid = STATE.new_room(topic, user)
+        mySendAll(sock, f"Room {rid} created for topic '{topic}'\n".encode())
+        return
 
+    # LIST ROOMS
+    if command == "rooms":
+        rooms = STATE.list_rooms()
+        if not rooms:
+            mySendAll(sock, b"(no rooms)\n")
+        else:
+            for line in rooms:
+                mySendAll(sock, f"{line}\n".encode())
+        return
+
+    # JOIN ROOM
+    if command == "join":
+        if len(args) != 1 or not args[0].isdigit():
+            mySendAll(sock, b"Usage: join <room#>\n")
+            return
+        rid = int(args[0])
+        if not STATE.join_room(rid, user):
+            mySendAll(sock, b"Room not found.\n")
+        else:
+            mySendAll(sock, f"Joined room {rid}\n".encode())
+        return
+
+    # LEAVE ROOM
+    if command == "leave":
+        if len(args) != 1 or not args[0].isdigit():
+            mySendAll(sock, b"Usage: leave <room#>\n")
+            return
+        rid = int(args[0])
+        result = STATE.leave_room(rid, user)
+        if result is None:
+            mySendAll(sock, b"Room not found or not a member.\n")
+        elif result:  # leader left
+            for m in result:
+                mySendAll(sock, f"[room {rid}] closed (leader left)\n".encode())
+            mySendAll(sock, f"You (leader) closed room {rid}\n".encode())
+        else:
+            mySendAll(sock, f"You left room {rid}\n".encode())
+        return
+
+    # SAY MESSAGE
+    if command == "say":
+        if len(args) < 2 or not args[0].isdigit():
+            mySendAll(sock, b"Usage: say <room#> <msg>\n")
+            return
+        rid = int(args[0])
+        msg = " ".join(args[1:])
+        r = STATE.rooms.get(rid)
+        if not r:
+            mySendAll(sock, b"Room not found.\n")
+            return
+        if user not in r.members:
+            mySendAll(sock, b"Not a member of that room.\n")
+            return
+        for member in r.members:
+            if member == user:
+                continue
+            # Find the socket by username
+            # (simplest approach: message everyone in same thread pool)
+            safe_send_line(sock, f"[{rid}] {user}: {msg}")
+        mySendAll(sock, b"Message sent.\n")
+        return
+    
 """
 Send all data to sock, return 1 if successful
 -1 if failed (socket error)
@@ -71,30 +198,31 @@ def mySendAll(sock, data):
 
     return 1
 
+def safe_send_line(sock, line: str):
+    """Send a single line to a socket safely."""
+    try:
+        sock.sendall((line.rstrip() + "\n").encode())
+    except Exception:
+        pass
+
 def processCmd(userName, sock, cmd):
-    print(f"process '{cmd}' from {userName}")
-    parts = cmd.split()
-    if not parts: 
+    parts = cmd.strip().split()
+    if not parts:
+        return
+    command = parts[0].lower()
+    args = parts[1:]
+
+    # --- ROOM COMMANDS ---
+    if command in ("start", "rooms", "join", "leave", "say"):
+        handle_room_cmd(sock, userName, command, args)
         return
 
-    command = parts[0].lower()
-    #guest can use register, exit, or quit
-    if isGuest and command not in ("register", "exit", "quit"):
-        mySendAll(sock, b"Guests can only use 'register', 'exit', or 'quit'.\n")
+    # --- DEFAULT / OTHER COMMANDS ---
+    if command == "quit" or command == "exit":
+        mySendAll(sock, goodbyeMsg.encode())
+        sock.close()
         return
-    if command == "register":
-        if len(parts) != 3:
-            mySendAll(sock, b"Usage: register username password\n")
-            return
-        uname, pwd = parts[1], parts[2]
-        if uname in users:
-            mySendAll(sock, b"Username already exists.\n")
-        else:
-            users[name] = pwd
-            save_users()
-            mySendAll(sock, f"Registered user '{uname}'.\n".encode())
     else:
-        # perform according to the cmd, echo for now
         mySendAll(sock, f"Server response to '{cmd}'\n".encode())
 
 def handleOneClient(sock):
@@ -166,6 +294,18 @@ def handleOneClient(sock):
         data = sock.recv(1000)
         if (len(data) == 0):
             print("Client closed connection")
+
+    # --- Clean up any rooms the user was in ---
+            for rid, r in list(STATE.rooms.items()):
+                if userName in r.members:
+                    if r.leader == userName:
+                        members = STATE.leave_room(rid, userName)
+                        # notify remaining members that leader left
+                        for m in members:
+                            mySendAll(sock, f"[room {rid}] closed (leader disconnected)\n".encode())
+                    else:
+                        r.members.remove(userName)
+
             sock.close()
             break
 
@@ -174,6 +314,16 @@ def handleOneClient(sock):
 
         #exit/quit if told by command
         if (command == 'quit' or command == 'exit'):
+            # --- Clean up rooms on quit ---
+            for rid, r in list(STATE.rooms.items()):
+                if userName in r.members:
+                    if r.leader == userName:
+                        members = STATE.leave_room(rid, userName)
+                        for m in members:
+                            mySendAll(sock, f"[room {rid}] closed (leader left)\n".encode())
+                    else:
+                        r.members.remove(userName)
+
             mySendAll(sock, goodbyeMsg.encode())
             sock.close()
             break
