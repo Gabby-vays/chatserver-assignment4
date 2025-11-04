@@ -84,7 +84,7 @@ class State:
                 return False
 
             #prepare the message string
-            full_msg = f"[{rid}] {sender}: {msg}"
+            full_msg = f"\n[{rid}] {sender}: {msg}\n"
             for member in room.members:
                 if member == sender:
                     continue
@@ -238,6 +238,27 @@ def processCmd(userName, sock, cmd):
     # --- ROOM COMMANDS ---
     if command in ("start", "rooms", "join", "leave", "say"):
         handle_room_cmd(sock, userName, command, args)
+        return
+
+    if command == "tell":
+        if len(args) < 2:
+            mySendAll(sock, b"Usage: tell <user> <message>\n")
+            return
+
+        target_user = args[0]
+        msg = " ".join(args[1:])
+
+        with STATE._lock:
+            target_sock = STATE.online_users.get(target_user)
+        
+        if not target_sock:
+            mySendAll(sock, f"User '{target_user}' not found or offline.\n".encode())
+            return
+
+        #send to the recipient
+        safe_send_line(target_sock, f"[private] {userName}: {msg}\n<{target_user}:> ")
+        #confirm to sender
+        mySendAll(sock, f"[to {target_user}] {msg}\n".encode())
         return
 
     # --- DEFAULT / OTHER COMMANDS ---
