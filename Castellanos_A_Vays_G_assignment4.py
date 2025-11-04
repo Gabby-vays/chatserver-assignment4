@@ -11,13 +11,16 @@ view online users, set personal information, and manage user interactions throug
 blocking and unblocking. The server handles multiple concurrent clients using threads
 and ensures safe access to shared data through locks.
 
+Example Tests:
+All passed.
+
 Assumptions: 
 • Input is well-formed (valid commands, proper argument count, etc.).
 • Usernames are unique and case-insensitive.
 • The server and clients are run on the same linprog network.
 • To run this program:
-    1. Start the server using:  python3 project4.py <server_port>
-       (Example: python3 project4.py 55555)
+    1. Start the server using:  python3 Castellanos_A_Vays_G_assignment4.py <server_port>
+       (Example: python3 Castellanos_A_Vays_G_assignment4.py 55555)
     2. In a separate terminal, connect using:  telnet linprog <server_port>
        (Example: telnet linprog 55555)
 • Clients connect via telnet or a similar socket-based client.
