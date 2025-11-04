@@ -219,9 +219,8 @@ def handle_room_cmd(sock, user, command, args):
         result = STATE.leave_room(rid, user)
         if result is None:
             mySendAll(sock, b"Room not found or not a member.\n")
-        elif result:  # leader left
-            for m in result:
-                mySendAll(sock, f"[room {rid}] closed (leader left)\n".encode())
+        elif result:  # leader left -> result is remaining members
+            notify_room_closed(rid, result, "leader left")
             mySendAll(sock, f"You (leader) closed room {rid}\n".encode())
         else:
             mySendAll(sock, f"You left room {rid}\n".encode())
@@ -279,6 +278,15 @@ def safe_send_line(sock, line: str):
         sock.sendall((line.rstrip() + "\n").encode())
     except Exception as e:
         print(f"Send error: {e}")
+
+def notify_room_closed(rid: int, members: set[str], reason: str):
+    """Notify remaining members that a room closed for a reason."""
+    with STATE._lock:
+        for m in members:
+            msock = STATE.online_users.get(m)
+            if msock:
+                safe_send_line(msock, f"[room {rid}] closed ({reason})")
+                safe_send_line(msock, f"<{m}:> ")       
 
 def processCmd(userName, sock, cmd):
     parts = cmd.strip().split()
@@ -498,16 +506,17 @@ def handleOneClient(sock):
         if (len(data) == 0):
             print("Client closed connection")
 
-    # --- Clean up any rooms the user was in ---
+            # --- Clean up any rooms the user was in ---
             for rid, r in list(STATE.rooms.items()):
                 if userName in r.members:
                     if r.leader == userName:
                         members = STATE.leave_room(rid, userName)
-                        # notify remaining members that leader left
-                        for m in members:
-                            mySendAll(sock, f"[room {rid}] closed (leader disconnected)\n".encode())
+                        notify_room_closed(rid, members, "leader disconnected")
                     else:
                         r.members.remove(userName)
+
+            with STATE._lock:
+                STATE.online_users.pop(userName, None)
 
             sock.close()
             break
@@ -522,8 +531,7 @@ def handleOneClient(sock):
                 if userName in r.members:
                     if r.leader == userName:
                         members = STATE.leave_room(rid, userName)
-                        for m in members:
-                            mySendAll(sock, f"[room {rid}] closed (leader left)\n".encode())
+                        notify_room_closed(rid, members, "leader left")
                     else:
                         r.members.remove(userName)
 
