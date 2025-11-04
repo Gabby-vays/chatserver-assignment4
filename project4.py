@@ -24,6 +24,7 @@ beforeLoginMsg = ''
 goodbyeMsg = ''
 
 users = {} #{ username: password }
+user_info = {}  # {username: info_text}
 
 # ---------------------- ROOM MANAGEMENT ----------------------
 
@@ -76,25 +77,6 @@ class State:
                 del self.rooms[rid]
                 return members
             return set()
-
-    def broadcast_to_room(self, rid: int, sender: str, msg: str):
-        with self._lock:
-            room = self.rooms.get(rid)
-            if not room:
-                return False
-
-            #prepare the message string
-            full_msg = f"\n[{rid}] {sender}: {msg}\n"
-            for member in room.members:
-                if member == sender:
-                    continue
-                member_sock = self.online_users.get(member)
-                if member_sock:
-                    safe_send_line(member_sock, full_msg)
-                    safe_send_line(member_sock, f"<{member}:> ")
-                else:
-                    print(f"[DEBUG] no socket found for {member}")
-        return True
 
 STATE = State()
 
@@ -180,23 +162,20 @@ def handle_room_cmd(sock, user, command, args):
             return
         rid = int(args[0])
         msg = " ".join(args[1:])
-
-        #make sure there is safe thread accessing with lock
-        with STATE._lock:
-            r = STATE.rooms.get(rid)
-            if not r:
-                mySendAll(sock, b"Room not found.\n")
-                return
-            if user not in r.members:
-                mySendAll(sock, b"Not a member of that room.\n")
-                return
-
-        # Find the socket by username
-        # (simplest approach: message everyone in same thread pool)
-        if STATE.broadcast_to_room(rid, user, msg):
-            mySendAll(sock, b"Message sent.\n")
-        else:
-            mySendAll(sock, b"Failed to deliver message.\n")
+        r = STATE.rooms.get(rid)
+        if not r:
+            mySendAll(sock, b"Room not found.\n")
+            return
+        if user not in r.members:
+            mySendAll(sock, b"Not a member of that room.\n")
+            return
+        for member in r.members:
+            if member == user:
+                continue
+            # Find the socket by username
+            # (simplest approach: message everyone in same thread pool)
+            safe_send_line(sock, f"[{rid}] {user}: {msg}")
+        mySendAll(sock, b"Message sent.\n")
         return
     
 """
@@ -234,6 +213,53 @@ def processCmd(userName, sock, cmd):
         return
     command = parts[0].lower()
     args = parts[1:]
+
+    if command == "help":
+        help_text = (
+            "Available commands:\n"
+            "who - list online users\n"
+            "status [user] - show user info\n"
+            "info [text] - set or show your info\n"
+            "start <topic> - create a room\n"
+            "rooms - list rooms\n"
+            "join <room#> - join a room\n"
+            "leave <room#> - leave a room\n"
+            "say <room#> <msg> - message room members\n"
+            "shout <msg> - broadcast to all online\n"
+            "tell <user> <msg> - send private message\n"
+            "block/unblock <user> - mute/unmute a user\n"
+            "quit / exit - log out\n"
+            "help - show this message\n"
+        )
+        mySendAll(sock, help_text.encode())
+        return
+
+    if command == "who":
+        with STATE._lock:
+            if not STATE.online_users:
+                mySendAll(sock, b"No users online.\n")
+            else:
+                for u in STATE.online_users:
+                    mySendAll(sock, f"{u}\n".encode())
+        return
+    
+    if command == "status":
+        target = args[0] if args else userName
+        info = user_info.get(target, "(no info)")
+        if target in users:
+            mySendAll(sock, f"{target}: {info}\n".encode())
+        else:
+            mySendAll(sock, b"User not found.\n")
+        return
+    
+    if command == "info":
+        if not args:
+            info = user_info.get(userName, "(no info set)")
+            mySendAll(sock, f"Your info: {info}\n".encode())
+        else:
+            user_info[userName] = " ".join(args)
+            mySendAll(sock, b"Info updated.\n")
+        return
 
     # --- ROOM COMMANDS ---
     if command in ("start", "rooms", "join", "leave", "say"):
