@@ -25,6 +25,10 @@ goodbyeMsg = ''
 
 users = {} #{ username: password }
 user_info = {}  # {username: info_text}
+blocked_users = {}  # { username: set_of_blocked_usernames }
+def canon(u: str) -> str:
+    """Normalize usernames (strip spaces and lowercase) for consistent lookups."""
+    return u.strip().lower()
 
 # ---------------------- ROOM MANAGEMENT ----------------------
 
@@ -83,11 +87,12 @@ class State:
             room = self.rooms.get(rid)
             if not room:
                 return False
-
-            #prepare the message string
             full_msg = f"[{rid}] {sender}: {msg}"
             for member in room.members:
                 if member == sender:
+                    continue
+                # skip if receiver has blocked sender
+                if canon(sender) in blocked_users.get(canon(member), set()):
                     continue
                 member_sock = self.online_users.get(member)
                 if member_sock:
@@ -286,6 +291,32 @@ def processCmd(userName, sock, cmd):
     if command in ("start", "rooms", "join", "leave", "say"):
         handle_room_cmd(sock, userName, command, args)
         return
+    
+
+    # --- BLOCK / UNBLOCK ---
+    if command == "block":
+        if len(args) != 1:
+            mySendAll(sock, b"Usage: block <user>\n")
+            return
+        owner = canon(userName)
+        target = canon(args[0])
+        blocked_users.setdefault(owner, set()).add(target)
+        mySendAll(sock, f"{args[0]} blocked.\n".encode())
+        return
+
+    if command == "unblock":
+        if len(args) != 1:
+            mySendAll(sock, b"Usage: unblock <user>\n")
+            return
+        owner = canon(userName)
+        target = canon(args[0])
+        s = blocked_users.get(owner, set())
+        if target in s:
+            s.remove(target)
+            mySendAll(sock, f"{args[0]} unblocked.\n".encode())
+        else:
+            mySendAll(sock, b"User was not blocked.\n")
+        return
 
     # --- DEFAULT / OTHER COMMANDS ---
     if command == "quit" or command == "exit":
@@ -354,7 +385,7 @@ def handleOneClient(sock):
         sock.close()
         return
 
-    welcome_banner = """ %%%%% """ #change to actual banner
+    welcome_banner = """ %%%%% """ 
 
     mySendAll(sock, welcome_banner.encode())
     if isGuest:
