@@ -240,6 +240,7 @@ def processCmd(userName, sock, cmd):
         handle_room_cmd(sock, userName, command, args)
         return
 
+    # ---- Message commands ------
     if command == "tell":
         if len(args) < 2:
             mySendAll(sock, b"Usage: tell <user> <message>\n")
@@ -259,6 +260,22 @@ def processCmd(userName, sock, cmd):
         safe_send_line(target_sock, f"[private] {userName}: {msg}\n<{target_user}:> ")
         #confirm to sender
         mySendAll(sock, f"[to {target_user}] {msg}\n".encode())
+        return
+
+    if command == "shout":
+        if len(args) < 1:
+            mySendAll(sock, b"Usage: shout <message>\n")
+            return
+
+        msg = " ".join(args)
+        full_msg = f"\n[shout] {userName}: {msg}\n"
+
+        with STATE._lock:
+            for member, member_sock in STATE.online_users.items():
+                #send to everyone including sender
+                if member_sock:
+                    safe_send_line(member_sock, full_msg)
+                    safe_send_line(member_sock, f"<{member}:> ")
         return
 
     # --- DEFAULT / OTHER COMMANDS ---
