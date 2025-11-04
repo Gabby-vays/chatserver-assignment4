@@ -303,6 +303,7 @@ def processCmd(userName, sock, cmd):
             "block/unblock <user> - mute/unmute a user\n"
             "quit / exit - log out\n"
             "help - show this message\n"
+            "register <user> <passwd> - register a new user"
         )
         mySendAll(sock, help_text.encode())
         return
@@ -416,6 +417,25 @@ def processCmd(userName, sock, cmd):
         mySendAll(sock, goodbyeMsg.encode())
         sock.close()
         return
+
+    if command == "register":
+        if len(args) != 2:
+            mySendAll(sock, b"Usage: register <user> <passwd>\n")
+            return
+        new_user, new_pwd = args[0], args[1]
+
+        #if already exists:
+        if new_user in users:
+            mySendAll(sock, f"Username '{new_user}' already exists.\n".encode())
+            return
+
+        #store user
+        users[new_user] = new_pwd
+        save_users()
+
+        mySendAll(sock, f"Registered new user '{new_user}' successfully.\n".encode())
+        return
+
     else:
         mySendAll(sock, f"Server response to '{cmd}'\n".encode())
 
