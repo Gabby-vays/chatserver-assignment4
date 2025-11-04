@@ -186,22 +186,20 @@ def handle_room_cmd(sock, user, command, args):
             return
         rid = int(args[0])
         msg = " ".join(args[1:])
-
-        #make sure there is safe thread accessing with lock
-        with STATE._lock:
-            r = STATE.rooms.get(rid)
-            if not r:
-                mySendAll(sock, b"Room not found.\n")
-                return
-            if user not in r.members:
-                mySendAll(sock, b"Not a member of that room.\n")
-                return
-
-        # Find the socket by username
-        if STATE.broadcast_to_room(rid, user, msg):
-            mySendAll(sock, b"Message sent.\n")
-        else:
-            mySendAll(sock, b"Failed to deliver message.\n")
+        r = STATE.rooms.get(rid)
+        if not r:
+            mySendAll(sock, b"Room not found.\n")
+            return
+        if user not in r.members:
+            mySendAll(sock, b"Not a member of that room.\n")
+            return
+        for member in r.members:
+            if member == user:
+                continue
+            # Find the socket by username
+            # (simplest approach: message everyone in same thread pool)
+            safe_send_line(sock, f"[{rid}] {user}: {msg}")
+        mySendAll(sock, b"Message sent.\n")
         return
     
 """
@@ -291,31 +289,43 @@ def processCmd(userName, sock, cmd):
     if command in ("start", "rooms", "join", "leave", "say"):
         handle_room_cmd(sock, userName, command, args)
         return
-    
 
-    # --- BLOCK / UNBLOCK ---
-    if command == "block":
-        if len(args) != 1:
-            mySendAll(sock, b"Usage: block <user>\n")
+    # ---- Message commands ------
+    if command == "tell":
+        if len(args) < 2:
+            mySendAll(sock, b"Usage: tell <user> <message>\n")
             return
-        owner = canon(userName)
-        target = canon(args[0])
-        blocked_users.setdefault(owner, set()).add(target)
-        mySendAll(sock, f"{args[0]} blocked.\n".encode())
+
+        target_user = args[0]
+        msg = " ".join(args[1:])
+
+        with STATE._lock:
+            target_sock = STATE.online_users.get(target_user)
+        
+        if not target_sock:
+            mySendAll(sock, f"User '{target_user}' not found or offline.\n".encode())
+            return
+
+        #send to the recipient
+        safe_send_line(target_sock, f"[private] {userName}: {msg}\n<{target_user}:> ")
+        #confirm to sender
+        mySendAll(sock, f"[to {target_user}] {msg}\n".encode())
         return
 
-    if command == "unblock":
-        if len(args) != 1:
-            mySendAll(sock, b"Usage: unblock <user>\n")
+    if command == "shout":
+        if len(args) < 1:
+            mySendAll(sock, b"Usage: shout <message>\n")
             return
-        owner = canon(userName)
-        target = canon(args[0])
-        s = blocked_users.get(owner, set())
-        if target in s:
-            s.remove(target)
-            mySendAll(sock, f"{args[0]} unblocked.\n".encode())
-        else:
-            mySendAll(sock, b"User was not blocked.\n")
+
+        msg = " ".join(args)
+        full_msg = f"\n[shout] {userName}: {msg}\n"
+
+        with STATE._lock:
+            for member, member_sock in STATE.online_users.items():
+                #send to everyone including sender
+                if member_sock:
+                    safe_send_line(member_sock, full_msg)
+                    safe_send_line(member_sock, f"<{member}:> ")
         return
 
     # --- DEFAULT / OTHER COMMANDS ---
