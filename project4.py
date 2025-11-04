@@ -36,6 +36,7 @@ from threading import RLock
 GOODBYEMSGFILE = "./goodbye.txt"
 BEFORELOGINMSGFILE = "./prelogin.txt"
 USERS_FILE = "./users.txt"
+BLOCKED_FILE = "./blocked.txt"
 
 beforeLoginMsg = ''
 goodbyeMsg = ''
@@ -144,6 +145,34 @@ def save_users():
     with open(USERS_FILE, "w") as f:
         for u, p in users.items():
             f.write(f"{u}:{p}\n")
+
+def load_blocked():
+    """Load persistent block lists from BLOCKED_FILE into blocked_users."""
+    global blocked_users
+    if not os.path.exists(BLOCKED_FILE):
+        open(BLOCKED_FILE, "w").close()
+    with open(BLOCKED_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(":")
+            if len(parts) != 2:
+                continue
+            owner, csv = parts
+            owner_c = canon(owner)
+            if csv:
+                blocked_users[owner_c] = set(canon(x) for x in csv.split(",") if x)
+            else:
+                blocked_users[owner_c] = set()
+
+def save_blocked():
+    """Persist blocked_users to BLOCKED_FILE."""
+    with open(BLOCKED_FILE, "w") as f:
+        for owner_c, blocked_set in blocked_users.items():
+            # store display-friendly names; we keep canonical in memory
+            csv = ",".join(sorted(blocked_set))
+            f.write(f"{owner_c}:{csv}\n")
                 
 def handle_room_cmd(sock, user, command, args):
     # CREATE ROOM
@@ -202,6 +231,8 @@ def handle_room_cmd(sock, user, command, args):
             return
         rid = int(args[0])
         msg = " ".join(args[1:])
+
+        # validate room and membership
         r = STATE.rooms.get(rid)
         if not r:
             mySendAll(sock, b"Room not found.\n")
@@ -209,12 +240,12 @@ def handle_room_cmd(sock, user, command, args):
         if user not in r.members:
             mySendAll(sock, b"Not a member of that room.\n")
             return
-        for member in r.members:
-            if member == user:
-                continue
-            # Find the socket by username
-            safe_send_line(sock, f"[{rid}] {user}: {msg}")
-        mySendAll(sock, b"Message sent.\n")
+
+        # broadcast (respects blocks)
+        if STATE.broadcast_to_room(rid, user, msg):
+            mySendAll(sock, b"Message sent.\n")
+        else:
+            mySendAll(sock, b"Failed to deliver message.\n")
         return
     
 """
@@ -358,6 +389,7 @@ def processCmd(userName, sock, cmd):
         owner = canon(userName)
         target = canon(args[0])
         blocked_users.setdefault(owner, set()).add(target)
+        save_blocked()  # <-- ADD THIS
         mySendAll(sock, f"{args[0]} blocked.\n".encode())
         return
 
@@ -370,6 +402,7 @@ def processCmd(userName, sock, cmd):
         s = blocked_users.get(owner, set())
         if target in s:
             s.remove(target)
+            save_blocked()  # <-- ADD THIS
             mySendAll(sock, f"{args[0]} unblocked.\n".encode())
         else:
             mySendAll(sock, b"User was not blocked.\n")
@@ -513,6 +546,7 @@ if len(sys.argv) != 2:
 
 loadMsgs()
 load_users()
+load_blocked()
 
 #create socket and allow port usage
 s = socket()
