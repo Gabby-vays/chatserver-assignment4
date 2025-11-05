@@ -377,6 +377,7 @@ def processCmd(userName, sock, cmd):
         mySendAll(sock, f"[to {target_raw}] {msg}\n".encode())
         return
 
+    #----SHOUT-----
     if command == "shout":
         if len(args) < 1:
             mySendAll(sock, b"Usage: shout <message>\n")
@@ -384,16 +385,20 @@ def processCmd(userName, sock, cmd):
 
         msg = " ".join(args)
         full_msg = f"\n[shout] {userName}: {msg}\n"
+        sender_c = canon(userName)
 
         with STATE._lock:
             for member, member_sock in STATE.online_users.items():
-                #send to everyone including sender
-                if member_sock:
-                    safe_send_line(member_sock, full_msg)
-                    safe_send_line(member_sock, f"<{member}:> ")
+                if not member_sock:
+                    continue
+                # If this receiver has blocked the sender, skip them
+                if sender_c in blocked_users.get(canon(member), set()):
+                    continue
+                safe_send_line(member_sock, full_msg)
+                safe_send_line(member_sock, f"<{member}:> ")
         return
     
-    # --- BLOCK / UNBLOCK (canonicalized) ---
+    #  BLOCK / UNBLOCK 
     if command == "block":
         if len(args) != 1:
             mySendAll(sock, b"Usage: block <user>\n")
