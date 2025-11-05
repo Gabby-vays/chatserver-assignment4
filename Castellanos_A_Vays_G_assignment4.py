@@ -391,11 +391,15 @@ def processCmd(userName, sock, cmd):
             for member, member_sock in STATE.online_users.items():
                 if not member_sock:
                     continue
-                # If this receiver has blocked the sender, skip them
-                if sender_c in blocked_users.get(canon(member), set()):
+
+                #skip if blocked user
+                blocked_set = blocked_users.get(canon(member), set())
+                if sender_c in blocked_set:
+                    print(f"[DEBUG] {member} has blocked {userName} - skipping")
                     continue
-                safe_send_line(member_sock, full_msg)
-                safe_send_line(member_sock, f"<{member}:> ")
+
+                safe_send_line(member_sock,f"\n{full_msg}\n<{member}:> ")
+        mySendAll(sock, b"Message sent.\n")
         return
     
     #  BLOCK / UNBLOCK 
